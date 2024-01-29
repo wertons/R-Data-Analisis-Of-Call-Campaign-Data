@@ -1,0 +1,780 @@
+---
+title: 'Call campaign data analysis'
+author: "Pau Bestard"
+date: "jan 2024"
+output:
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+
+  word_document: default
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+------------------------------------------------------------------------
+
+# About
+
+This is a project made with the objective of familiarizing with data analysis and profile/cluster creation utilizing various R packages and techniques.
+
+We will use a dataset related to an internal telemarketing campaign of a Portuguese bank. Link to the dataset: <https://archive.ics.uci.edu/dataset/222/bank+marketing>
+
+From this dataset, the obvious value lies in creating profiles of potential subscribers. Therefore, the analysis of the data will focus on variables related to the client, clustering of the data, and the effect of this on the conversion ratio.
+
+We will start by importing the file and visualizing the general data structure:
+
+```{r}
+data <- read.csv("./bank-full.csv", sep=";")
+summary(data)
+```
+
+# Data summary
+
+## Customer Data
+
+1.  age: Age of the individual,
+    -   Integer range 18 - 95
+2.  job: Type of job of the individual,
+    -   Categorical string:
+        -   "admin.", "unknown", "unemployed", "management", "housemaid", "entrepreneur", "student", "blue-collar", "self-employed", "retired", "technician", "services"
+3.  marital: Marital status,
+    -   Categorical string:
+        -   "married", "divorced", "single"
+4.  education: Level of education,
+    -   Categorical string:
+        -   "unknown", "secondary", "primary", "tertiary"
+5.  default: Defines if they have credit in the bank,
+    -   Binary:
+        -   "yes", "no"
+6.  balance: Average annual income in Euros,
+    -   Integer range -8019 - 102127
+7.  housing: Defines if they have a housing loan,
+    -   Binary:
+        -   "yes", "no"
+8.  loan: Defines if they have a personal loan,
+    -   Binary:
+        -   "yes", "no"
+
+## Data from the last contact of this advertising campaign
+
+9.  contact: Contact method,
+    -   Categorical string:
+        -   "unknown", "telephone", "cellular"
+10. day: Day of the month of last contact,
+    -   Integer range 1 - 31
+11. month: Month of the last contact,
+    -   Categorical string:
+        -   "jan", "feb", "mar", ..., "nov", "dec"
+12. duration: Duration of the last contact in seconds,
+    -   Integer range 0 - 4918
+
+## Other data
+
+13. campaign: Number of contacts made during this campaign with this customer including last contact,
+    -   Integer range 1 - 63
+14. pdays: Number of days elapsed since the last contact, -1 represents this is the first contact,
+    -   Integer range -1 - 871
+15. previous: Number of contacts made prior to this campaign,
+    -   Integer range 0 - 275
+16. poutcome: Outcome of the previous marketing campaign,
+    -   Categorical string:
+        -   "unknown", "other", "failure", "success"
+
+Campaign Outcome
+
+17. y: Defines if the customer has subscribed,
+    -   Binary:
+        -   "yes", "no"
+
+## Visualizing category percentages
+
+We will create categories for age and balance to aid in visualization:
+
+```{r}
+data$age_group <- cut(data$age, breaks = seq(0, 100, by = 10), include.lowest = FALSE)
+
+data$balance_group <- cut(data$balance, breaks = c(-Inf, 0,2000,5000,10000, 20000, 30000,40000,50000, Inf), labels = c("Negative","0-2k","2k-5k","5-10k", "10-20k", "20-30k","30-40k", "40-50k", "50k+"), include.lowest = TRUE)
+
+data$month_digit <- match(data$month, c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))
+
+```
+
+Bar plots showcasing the percentage of values are used to better understand the data population:
+
+```{r}
+library(ggplot2)
+
+create_percentage_bar_plot <- function(data, column) {
+  percentage <- prop.table(table(data[[column]])) * 100
+  
+  df <- data.frame(Category = names(percentage), Percentage = as.numeric(percentage))
+  
+  if (column == "month") {
+    month_order <- factor(df$Category, levels = c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))
+    
+    ggplot(df, aes(x = month_order, y = Percentage, fill = Category)) +
+      geom_bar(stat = "identity") +
+      labs(title = paste("Percentage of", column),
+           x = column,
+           y = "Percentage") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  } else {
+    ggplot(df, aes(x = Category, y = Percentage, fill = Category)) +
+      geom_bar(stat = "identity") +
+      labs(title = paste("Percentage of", column),
+           x = column,
+           y = "Percentage") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  }
+}
+
+columns <- c("job", "education", "month", "marital", "age_group", "balance_group")
+plots <- lapply(columns, function(col) create_percentage_bar_plot(data, col))
+```
+
+### Job percentages
+
+We observe "blue-collar", "management" and "technician" as the highest populations
+
+```{r}
+print(plots[[1]])
+```
+
+### Education percentages
+
+We observe "secondary" and "tertiary" as the highest populations
+
+```{r}
+print(plots[[2]])
+```
+
+### Month of call percentages
+
+Although not used in this project we can see the highest activity month is "may"
+
+```{r}
+print(plots[[3]])
+```
+
+### Marital status percentages
+
+We observe "married" as the highest population
+
+```{r}
+print(plots[[4]])
+```
+
+### Age group percentages
+
+We observe the 30-40 to be the highest population group and notably a vast mayority of the populations is in the bracket 20-60
+
+```{r}
+print(plots[[5]])
+```
+
+### Balance group percentages
+
+We observe the mayority of the population is in the range 0-2k, notably there is a very high percentage of the population in the "red"
+
+```{r}
+print(plots[[6]])
+```
+
+# Unsupervised models
+
+To begin we will use unsupervised models to try and create clusters from the data, for this we will use only columns 1:8(personal information).
+
+## Kmeans
+
+The first approach will be utilizing kmeans, for this we will convert all data to numeric and scaling it.
+
+```{r}
+
+
+datakmeans <- na.omit(data[1:8])
+datakmeans$job <- as.numeric(factor(datakmeans$job, levels = c("admin.", "unknown", "unemployed", "management", "housemaid", "entrepreneur", "student", "blue-collar", "self-employed", "retired", "technician", "services")))
+datakmeans$marital <- as.numeric(factor(datakmeans$marital, levels = c("married", "divorced", "single")))
+datakmeans$education <- as.numeric(factor(datakmeans$education, levels = c("unknown", "secondary", "primary", "tertiary")))
+datakmeans$default <- as.numeric(factor(datakmeans$default, levels = c("yes", "no")))
+datakmeans$housing <- as.numeric(factor(datakmeans$housing, levels = c("yes", "no")))
+datakmeans$loan <- as.numeric(factor(datakmeans$loan, levels = c("yes", "no")))
+
+scaled_data <- scale(datakmeans)
+```
+
+To find the optimal number of clusters we will create an elbow method, showing the increase in "quality" between the amount of nodes. Take notice of the use of "set.seed" as kmeans creates centroids "randomly" and results could vary with multiple executions of the code.
+
+```{r}
+set.seed(123)
+k_values <- 2:10
+inertia <- sapply(k_values, function(k) kmeans(scaled_data, centers = k)$tot.withinss)
+angles <- numeric(length(k_values))
+calculate_angle <- function(x1, y1, x2, y2) {
+  dot_product <- x1 * x2 + y1 * y2
+  magnitude_product <- sqrt(x1^2 + y1^2) * sqrt(x2^2 + y2^2)
+  angle <- acos(dot_product / magnitude_product)
+  return(angle)
+}
+for (i in 2:length(k_values)) {
+  angles[i] <- calculate_angle(k_values[i-1], inertia[i-1], k_values[i], inertia[i])
+}
+par(mfrow = c(1, 2), mar = c(3, 3, 3, 3))
+plot(k_values, inertia, type = "b",   xlab = "Number of clusters",
+     ylab = "Inertia", main = "Elbow method")
+plot(k_values[-1], angles[-1], type = "b",   xlab = "Number of clusters",
+     ylab = "Angle", main = "Angle increase")
+```
+
+We will utilize k = 6 for the amount of centroids, we will now create and observe the clusters
+
+```{r}
+library(dplyr)
+library(ggplot2)
+set.seed(123)  
+kmeans_result <- kmeans(scaled_data, centers = 6)
+data$cluster <- as.factor(kmeans_result$cluster)
+
+overall_summary <- data %>%
+  summarise(
+            size = n(),
+            avg_age = round(mean(age), 2),
+            avg_balance = round(mean(balance), 2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job)) / sum(table(job)) * 100, 2),
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2))
+
+
+cluster_summary_kmeans <- data %>%
+  group_by(cluster) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age),2),
+            avg_balance = round(mean(balance),2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job))/ sum(table(job)) * 100, 2) ,
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+            )
+cluster_summary_kmeans <- bind_rows(overall_summary,cluster_summary_kmeans)
+
+print(cluster_summary_kmeans)
+```
+
+### Cluster observation
+
+To better understand the clusters generated, we will observe them in different plots, looking for vertices with high density of a single cluster, defining that value as characteristic for the "profile" that represents the cluster.
+
+```{r}
+require(gridExtra)
+
+
+plot1 <- ggplot(data, aes(x = balance, y = age_group, color = cluster)) +
+  geom_point() +
+  labs(title = "Balance/Age",
+       x = "Balance",
+       y = "Age")
+plot2 <- ggplot(data, aes(x = balance, y = job, color = cluster)) +
+  geom_point() +
+  labs(title = "Balance/Job",
+       x = "Balance",
+       y = "Job")
+
+grid.arrange(plot1, plot2, ncol=1)
+```
+
+```{r}
+plot1 <- ggplot(data, aes(x = balance, y = education, color = cluster)) +
+  geom_point() +
+  labs(title = "Balance/Education",
+       x = "Balance",
+       y = "Education")
+
+plot2 <- ggplot(data, aes(x = balance, y = default, color = cluster)) +
+  geom_point() +
+  labs(title = "Balance/Default",
+       x = "Balance",
+       y = "Default")
+
+grid.arrange(plot1, plot2, ncol=1)
+
+
+```
+
+We comment on some evident aspects:
+
+-   Cluster 1 seems to "capture" the profile of retired individuals, with the majority being of advanced age and retired within this cluster.
+
+-   Cluster 3 seems to "capture" the profile of students, with the majority being of young age and students within this cluster.
+
+### Conclusions
+
+One of the key indicators of whether the clustering is creating profiles useful for our goal is that the created clusters average percentage of outcomes is as different as possible from the global average, meaning the traits of the clusters can be used to potentially predict the result for future campaigns.
+
+```{r}
+
+cluster_percentage_yes <- aggregate(y ~ cluster, data = data, FUN = function(x) sum(x == "yes") / length(x))
+sorted_clusters <- cluster_percentage_yes[order(cluster_percentage_yes$y, decreasing = TRUE), ]
+data$cluster <- factor(data$cluster, levels = sorted_clusters$cluster)
+
+
+total_percentage_yes <- (sum(data$y == "yes") / nrow(data))
+
+plot1 <- ggplot(data, aes(x = cluster, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Porcentaje de Subscripción por cluster",
+       x = "Month",
+       y = "Porcentaje Subscripción") +
+  geom_hline(yintercept = total_percentage_yes, linetype = "dashed", color = "black") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+
+grid.arrange(plot1, ncol = 1)
+
+```
+
+The generated clusters appear to be particularly useful, indicating a significant difference in the subscription ratio to groups 1 and 3, which had already been observed as outliers in the representation. These data could be interpreted, therefore, as profiles of potential customers to focus on in future campaigns.
+
+------------------------------------------------------------------------
+
+## Kmeans, Manhattan distance
+
+The previous unsupervised model will be generated again, but using a different distance metric in order to observe diferences.
+
+We will now apply the "Manhattan distance" to the dataset, in this case we are limiting the sample size due to the processing speed limitations of the device used to compile.
+
+```{r}
+library(flexclust)
+library(proxy)
+
+set.seed(123)
+dataTree <- na.omit(data[, c(1:8)])
+
+indexes = sample(1:nrow(data), size=5000)
+manhattanData <- scaled_data[indexes,]
+
+dist_manhattan <- proxy::dist(as.matrix(manhattanData), method = "Manhattan")
+
+kmeans_result_manhattan <- kcca(dist_manhattan, k = 6, family = kccaFamily("kmeans"))
+
+data$cluster_manhattan <- as.factor(kmeans_result$cluster)
+
+```
+
+We will observe the generated clusters.
+
+```{r}
+cluster_manhattan <- data %>%
+  group_by(cluster_manhattan) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age),2),
+            avg_balance = round(mean(balance),2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job))/ sum(table(job)) * 100, 2) ,
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+  )
+cluster_manhattan <- bind_rows(overall_summary,cluster_manhattan)
+
+print(cluster_manhattan)
+```
+
+### Cluster observation
+
+Let's visualize the clusters.
+
+```{r}
+require(gridExtra)
+
+
+plot1 <- ggplot(data, aes(x = balance, y = age_group, color = cluster_manhattan)) +
+  geom_point() +
+  labs(title = "Balance/Age",
+       x = "Balance",
+       y = "Age")
+plot2 <- ggplot(data, aes(x = balance, y = job, color = cluster_manhattan)) +
+  geom_point() +
+  labs(title = "Balance/Job",
+       x = "Balance",
+       y = "Job")
+
+grid.arrange(plot1, plot2, ncol=1)
+```
+
+We visualize the subscription rate by cluster in comparison with the default Euclidian distance kmeans, showing no significant differences.
+
+```{r}
+
+cluster_percentage_yes <- aggregate(y ~ cluster_manhattan, data = data, FUN = function(x) sum(x == "yes") / length(x))
+sorted_clusters <- cluster_percentage_yes[order(cluster_percentage_yes$y, decreasing = TRUE), ]
+data$cluster_manhattan <- factor(data$cluster_manhattan, levels = sorted_clusters$cluster)
+
+
+total_percentage_yes <- (sum(data$y == "yes") / nrow(data))
+
+plot1 <- ggplot(data, aes(x = cluster, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of subscriptions by cluster Euclidian distance",
+       x = "Cluster",
+       y = "Subscription percentage") +
+  geom_hline(yintercept = total_percentage_yes, linetype = "dashed", color = "black") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+plot2 <- ggplot(data, aes(x = cluster_manhattan, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of subscriptions by cluster Manhattan distance",
+       x = "Cluster",
+       y = "Subscription percentage") +
+  geom_hline(yintercept = total_percentage_yes, linetype = "dashed", color = "black") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+
+grid.arrange(plot1,plot2, ncol = 1)
+
+```
+
+```{r}
+require(gridExtra)
+
+
+plot1 <- ggplot(data, aes(x = balance, y = age_group, color = cluster)) +
+  geom_point() +
+  labs(title = "Balance/Age",
+       x = "Balance",
+       y = "Age")
+plot2 <- ggplot(data, aes(x = balance, y = age_group, color = cluster_manhattan)) +
+  geom_point() +
+  labs(title = "Balance/Age",
+       x = "Balance",
+       y = "Age")
+
+grid.arrange(plot1, plot2, ncol=1)
+```
+
+We see extreme similarity between the results of the two different distance metrics.
+
+As we can observe, the clusters generated by both distance methods provide extremely similar results, indicating that the differences between the distances do not provide any significant benefit. Therefore, it would be beneficial to use Euclidean k-means for its computational cost efficiency.
+
+------------------------------------------------------------------------
+
+## DBSCAN & OPTICS
+
+Now we will utilize the DBSCAN optics methods to create clusters. To start we will utilize the config minPts = 100 and eps_cl = 5.
+
+```{r}
+library(dbscan)
+library(dplyr)
+
+optics_result <- dbscan::optics(scaled_data, minPts = 100)
+
+dbscan_result <- extractDBSCAN(optics_result, eps_cl = 5)
+data$cluster_dbscan <- as.factor(dbscan_result$cluster)
+
+plot(dbscan_result, main="Reachability") 
+hullplot(scaled_data, dbscan_result)
+```
+
+The generated clusters.
+
+```{r}
+
+cluster_summary_dbscan <- data %>%
+  group_by(cluster_dbscan) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age), 2),
+            avg_balance = round(mean(balance), 2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job)) / sum(table(job)) * 100, 2),
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+  )
+cluster_summary_dbscan <- bind_rows(overall_summary,cluster_summary_dbscan)
+
+print(cluster_summary_dbscan)
+```
+
+### Testing different `eps` & `minPts`.
+
+We will create clusters using different parameters for both eps and minPts to try and achieve better results.
+
+We will start by changing eps to 2:
+
+```{r}
+
+dbscan_result_eps2 <- extractDBSCAN(optics_result, eps_cl = 2)
+data$cluster_dbscan_eps2 <- as.factor(dbscan_result_eps2$cluster)
+
+plot(dbscan_result_eps2, main="Reachability") 
+hullplot(scaled_data, dbscan_result_eps2)
+```
+
+```{r}
+cluster_summary_dbscan_eps2 <- data %>%
+  group_by(cluster_dbscan_eps2) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age), 2),
+            avg_balance = round(mean(balance), 2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job)) / sum(table(job)) * 100, 2),
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+  )
+cluster_summary_dbscan_eps2 <- bind_rows(overall_summary,cluster_summary_dbscan_eps2)
+
+print(cluster_summary_dbscan_eps2)
+```
+
+We observe a notable increase in the number of clusters with eps = 2. It is worth mentioning that only one cluster has a better ratio of the desired outcome. However, the clusters appear to be more desirable than with eps = 5, with a clearer definition of the outcome.
+
+We will now try to further reduce eps to 1, aiming to separate the two large clusters (20k, 16k) to obtain more radical results.
+
+```{r}
+
+dbscan_result_eps1 <- extractDBSCAN(optics_result, eps_cl = 1)
+data$cluster_dbscan_eps1 <- as.factor(dbscan_result_eps1$cluster)
+
+plot(dbscan_result_eps1, main="Reachability") 
+hullplot(scaled_data, dbscan_result_eps1)
+```
+
+```{r}
+cluster_summary_dbscan_eps1 <- data %>%
+  group_by(cluster_dbscan_eps1) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age), 2),
+            avg_balance = round(mean(balance), 2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job)) / sum(table(job)) * 100, 2),
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+  )
+cluster_summary_dbscan_eps1 <- bind_rows(overall_summary,cluster_summary_dbscan_eps1)
+
+print(cluster_summary_dbscan_eps1)
+```
+
+We see that the clusters of significant size have been separated; however, it would be necessary to interpret correctly the larger population, especially the high number of small clusters.
+
+We will now check the effect of modifying the minimum number of points for each center, minPts = 50, with eps = 5 to try to create more specific centroids.
+
+```{r}
+
+library(dbscan)
+library(dplyr)
+
+optics_result_min50 <- dbscan::optics(scaled_data, minPts = 50)
+
+
+dbscan_result_min50 <- extractDBSCAN(optics_result_min50, eps_cl = 5)
+data$cluster_dbscan_min50 <- as.factor(dbscan_result_min50$cluster)
+
+plot(dbscan_result, main="Reachability") 
+hullplot(scaled_data, dbscan_result_min50)
+
+```
+
+```{r}
+
+cluster_summary_dbscan_min50 <- data %>%
+  group_by(cluster_dbscan_min50) %>%
+  summarise(size = n(),
+            avg_age = round(mean(age), 2),
+            avg_balance = round(mean(balance), 2),
+            most_common_job = names(sort(table(job), decreasing = TRUE))[1],
+            job_frequency_percent = round(max(table(job)) / sum(table(job)) * 100, 2),
+            positive_outcome_percent = round(sum(y == "yes") / n() * 100, 2)
+  )
+cluster_summary_dbscan_min50 <- bind_rows(overall_summary,cluster_summary_dbscan_min50)
+
+print(cluster_summary_dbscan_min50)
+```
+
+We can see that the result is not appreciably different from minPts = 100.
+
+With the optimal parameterization, DBSCAN seems to offer potentially better results than the previous models, creating more distinctive clusters based on outcome differences. However, it's worth mentioning the computational cost of these methods. Even with this small sample size, each DBSCAN compilation consumes around 10-20 minutes, potentially requiring external computing resources for the application of this logic in another project.
+
+DBSCAN is useful as a cluster identifier, but it requires more interaction to fine-tune for optimal results.
+
+------------------------------------------------------------------------
+
+# Supervised models
+
+------------------------------------------------------------------------
+
+## c5.0 tree
+
+We will start by creating a decision tree based solely on customer information. We will select 80% of our 45,211 data points for training, leaving us with a split of 36,168 data points for training and 9,043 for testing.
+
+```{r}
+set.seed(123)
+split_prop <- 0.8
+dataTree <- na.omit(data[, c(1:8)])
+indexes = sample(1:nrow(dataTree), size=floor(split_prop*nrow(dataTree)))
+
+
+trainData<-dataTree[indexes,]
+trainDataRes <- as.factor(data[indexes, (names(data) %in% c("y"))])
+testData<-dataTree[-indexes,]
+
+print(paste("Training rows:", nrow(trainData)))
+print(paste("Test rows:", nrow(testData)))
+```
+
+An 80/20 split is used at the upper limits of the standard, due to the limited size of the sample data.
+
+We will generate the tree based on the personal data of the clients.
+
+```{r}
+set.seed(123)
+library(grid)
+library(C50)
+
+model <- C5.0(trainData, trainDataRes)
+plot(model,gp = gpar(fontsize = 8))
+model <- C5.0(trainData,trainDataRes, rules=TRUE) 
+summary(model)
+
+```
+
+We have generated a rather peculiar model, consisting of only 2 rules.
+
+From the training data, it appears that only a subset of individuals with a notable difference in subscription ratio is found, in this case, people over 60 years old, especially those who are retired and/or divorced.
+
+This indicates that the model, even without checking the confusion matrix, is unable to classify the majority of cases. However, it is worth mentioning the potential utility of identifying specific outliers.
+
+We will generate the confusion matrix for the model to better understand its effectiveness.
+
+```{r}
+predictions <- predict(model, newdata = testData)
+
+conf_matrix <- table(Actual = as.factor(data[-indexes, "y"]), Predicted = predictions)
+print(conf_matrix)
+
+```
+
+```{r}
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+specificity <- conf_matrix[1, 1] / sum(conf_matrix[1, ])
+error_rate <- 1 - accuracy
+
+cat("\nAccuracy:", round(accuracy * 100, 2), "%\n")
+cat("Precision:", round(precision * 100, 2), "%\n")
+cat("Recall:", round(recall * 100, 2), "%\n")
+cat("Especifity:", round(specificity * 100, 2), "%\n")
+cat("Error rate:", round(error_rate * 100, 2), "%\n")
+```
+
+As expected, we see that the model, by classifying only a small subset as class 1 (subscribed), is extremely poor (1.5%) at correctly identifying positive cases. However, it's worth noting its apparent excellent (99.7%) identification of negative cases.
+
+We cannot observe notable differences, even with a high number of trials, indicating that the model is not suitable for identifying outliers in the outcome.
+
+```{r}
+set.seed(123)
+library(grid)
+library(C50)
+
+model <- C5.0(trainData, trainDataRes, control = C5.0Control(minCases = 1), trials = 100)
+plot(model,gp = gpar(fontsize = 7))
+model <- C5.0(trainData,trainDataRes, control = C5.0Control(minCases = 1), rules=TRUE) 
+summary(model)
+
+```
+
+However, there is a set of rules that do seem to be identified, corresponding to previous results from other models, indicating a profile of outliers corresponding to older retired individuals.
+
+We can see that the generated models have a very low error rate (\~11%); however, interpreting this as being due to the low original ratio of the outcome and the fact that the vast majority of cases fall into the negative outcome according to the rules, indicates the extremely poor sensitivity (\~1%) of the model.
+
+As observed in previous models, the use of personal data does not seem particularly conclusive in creating profiles to identify outliers in the outcome, except for certain specific profiles. The results of these rules seem to corroborate that based on the available data, it is not possible to classify the majority of the population.
+
+------------------------------------------------------------------------
+
+## randomForest
+
+```{r}
+library(randomForest)
+library(iml)
+
+dataForest <- cbind(trainData, y = trainDataRes)
+
+rf <-  randomForest(y ~ ., data = dataForest, ntree = 50)
+```
+
+```{r}
+X <- dataForest[which(names(dataForest) != "y")]
+predictor <- Predictor$new(rf, data = X, y = dataForest$y) 
+imp <- FeatureImp$new(predictor, loss = "ce")
+plot(imp)
+
+```
+
+We will check the effectiveness of the model generated with RandomForest by creating a confusion matrix using the dataset not used for its creation.
+
+```{r}
+predictions <- predict(rf, newdata = testData)
+
+conf_matrix <- table(Actual = as.factor(data[-indexes, "y"]), Predicted = predictions)
+print(conf_matrix)
+
+```
+
+We will generate metrics from the confusion matrix to compare the quality of the model.
+
+```{r}
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+specificity <- conf_matrix[1, 1] / sum(conf_matrix[1, ])
+error_rate <- 1 - accuracy
+
+cat("\nAccuracy:", round(accuracy * 100, 2), "%\n")
+cat("Precision:", round(precision * 100, 2), "%\n")
+cat("Recall:", round(recall * 100, 2), "%\n")
+cat("Especifity:", round(specificity * 100, 2), "%\n")
+cat("Error rate:", round(error_rate * 100, 2), "%\n")
+```
+
+We will compare each of the result metrics in more depth:
+
+-   **Accuracy:**
+
+    -   Both models have fairly similar accuracy, with RandomForest slightly higher (88.42% vs. 88.29%).
+
+-   **Precision:**
+
+    -   RandomForest has much higher precision (71.43%) compared to C5.0 (39.02%). This suggests that when RandomForest predicts a positive class, it is more likely to be correct compared to C5.0.
+
+-   **Recall:**
+
+    -   C5.0 has higher recall (1.52%) compared to RandomForest (0.48%). Recall measures the proportion of true positives among all positive cases. In this case, C5.0 has a better ability to identify positive cases.
+
+-   **Specificity:**
+
+    -   RandomForest has higher specificity (99.97%) compared to C5.0 (99.69%). Specificity measures the proportion of true negatives among all negative cases.
+
+-   **Error Rate:**
+
+    -   The error rate is quite similar in both models, but RandomForest has a slightly lower value (11.58% vs. 11.71%).
+
+------------------------------------------------------------------------
+
+## Conclusions
+
+It has been observed that personal level data does not seem to be sufficient for creating general profiles for potential future clients, although some very specific profiles (such as older retired individuals and young people with capital) seem to have potential as future targets. Therefore, in a future study on the data, it would be of interest to observe the impact of variables on the contact itself to identify profiles.
+
+The use of predictive models in advertising entails certain risks that must be carefully considered. One of the main risks lies in the extrapolation of the results obtained. While the model may identify "outlier" profiles with a potential ratio of positive outcomes, it is essential to recognize that these results are based on limited historical data. Extrapolating these findings to future campaigns may not be as effective if market conditions or underlying variables experience significant changes.
+
+Although the model results seem to corroborate previous knowledge, in this case that the targets for a bank campaign should be those customers with disposable income and "naive" individuals, this could be due to the limited size of these populations and their nature as "extreme" cases. Therefore, an approach for a future campaign may not yield the expected results.
+
+The clear result of the models is the interest in identifying "outlier" profiles due to their potential ratio of positive outcomes.
+
+It is worth mentioning regarding the data the nature of the campaign and its effect on the data itself. An advertising campaign, especially direct telephone marketing, has a variety of variables not available in the data that can affect the outcome, from impossible-to-record information such as the client's mood or past negative experiences, to the tone of voice of the operator or the temperature of the day. Therefore, the inability of a model of this category to entirely determine the causes for the outcome of the campaign must be taken into account, requiring these data to be analyzed and studied by operators and/or managers with deeper knowledge of the specific market.
+
+In general terms, the use of predictive models for decision-making in advertising poses inherent risks. The accuracy of the models is directly related to the quality of the data and the ability to adapt to changes in market conditions. Additionally, there is a risk that the model results may be misinterpreted or overvalued, leading to erroneous strategic decisions. It is essential to implement risk mitigation measures, such as continuous validation of the model with updated data and active involvement of field experts to ensure informed and prudent decision-making.
+
+------------------------------------------------------------------------
